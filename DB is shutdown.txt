@@ -1,0 +1,123 @@
+- We lost the current redo log file and DB is not open and we did not multiplex this redo group :
+SQL> startup
+ORACLE instance started.
+
+Total System Global Area  796917760 bytes
+Fixed Size		    2929448 bytes
+Variable Size		  587205848 bytes
+Database Buffers	  201326592 bytes
+Redo Buffers		    5455872 bytes
+Database mounted.
+ORA-00313: open failed for members of log group 2 of thread 1
+ORA-00312: online log 2 thread 1:
+'/database/app/oracle/oradata/ncscm/redo02.log'
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 3
+
+SQL> select status from v$instance;
+
+STATUS
+------------
+MOUNTED
+
+We need to check the status of the redo02.log:
+SQLPLUS> select group#,status,archived,sequence#,first_change#,next_change# from v$log
+   
+       GROUP# STATUS	    ARC  SEQUENCE# FIRST_CHANGE# NEXT_CHANGE#
+---------- ---------------- --- ---------- ------------- ------------
+	 1 INACTIVE	    YES 	59	 2063078      2063082
+	 3 INACTIVE	    YES 	58	 2063075      2063078
+	 2 CURRENT	    NO		60	 2063082   2.8147E+14
+
+The status of redo02.log is "CURRENT", that means Oracle needs this redo for instance recovery and we cannot clear it.
+If we try to clear it, the follwing error will return:
+SQL> alter database clear logfile group 2;
+alter database clear logfile group 2
+*
+ERROR at line 1:
+ORA-01624: log 2 needed for crash recovery of instance ncscm (thread 1)
+ORA-00312: online log 2 thread 1:
+'/database/app/oracle/oradata/ncscm/redo02.log'
+
+SQL> alter database clear unarchived logfile group 2;
+alter database clear unarchived logfile group 2
+*
+ERROR at line 1:
+ORA-01624: log 2 needed for crash recovery of instance ncscm (thread 1)
+ORA-00312: online log 2 thread 1:
+'/database/app/oracle/oradata/ncscm/redo02.log'
+
+Because we cannot clear redo02.log we will not be able to open the DB, the only way that enable us 
+to open the DB is to recover the DB until the last avilable archived log:
+we need to query v$log and v$archived_log to check the availablilty and status of 
+redo log files and archived logs to know until what SCN we can recover the DB.
+
+SQLPLUS> select group#,status,archived,sequence#,first_change#,next_change# from v$log
+   
+       GROUP# STATUS	    ARC  SEQUENCE# FIRST_CHANGE# NEXT_CHANGE#
+---------- ---------------- --- ---------- ------------- ------------
+	 1 INACTIVE	    YES 	59	 2063078      2063082
+	 3 INACTIVE	    YES 	58	 2063075      2063078
+	 2 CURRENT	    NO		60	 2063082   2.8147E+14
+
+SQLPLUS> select sequence#,status,deleted,first_change#,next_change# from v$archived_log
+ 
+SEQUENCE# S DEL FIRST_CHANGE# NEXT_CHANGE#
+---------- - --- ------------- ------------
+	54 A NO        2062699	    2062842
+	55 A NO        2062842	    2062845
+	56 A NO        2062845	    2062848
+	57 A NO        2062848	    2063075
+	58 A NO        2063075	    2063078
+	59 A NO        2063078	    2063082
+based on these info we can recover until SCN 2063082.
+
+RMAN> run {
+2> set until scn 2063082;
+3> restore database;
+4> recover database;
+5> }
+
+executing command: SET until clause
+
+Starting restore at 09-MAY-18
+using target database control file instead of recovery catalog
+allocated channel: ORA_DISK_1
+channel ORA_DISK_1: SID=25 device type=DISK
+
+channel ORA_DISK_1: starting datafile backup set restore
+channel ORA_DISK_1: specifying datafile(s) to restore from backup set
+channel ORA_DISK_1: restoring datafile 00001 to /database/app/oracle/oradata/ncscm/system01.dbf
+channel ORA_DISK_1: restoring datafile 00003 to /database/app/oracle/oradata/ncscm/sysaux01.dbf
+channel ORA_DISK_1: restoring datafile 00004 to /database/app/oracle/oradata/ncscm/undotbs01.dbf
+channel ORA_DISK_1: restoring datafile 00005 to /database/app/oracle/oradata/ncscm/example01.dbf
+channel ORA_DISK_1: restoring datafile 00006 to /database/app/oracle/oradata/ncscm/users01.dbf
+channel ORA_DISK_1: reading from backup piece /fra/NCSCM/backupset/2018_05_09/o1_mf_nnndf_TAG20180509T082444_fh5t4dl7_.bkp
+channel ORA_DISK_1: piece handle=/fra/NCSCM/backupset/2018_05_09/o1_mf_nnndf_TAG20180509T082444_fh5t4dl7_.bkp tag=TAG20180509T082444
+channel ORA_DISK_1: restored backup piece 1
+channel ORA_DISK_1: restore complete, elapsed time: 00:00:55
+Finished restore at 09-MAY-18
+
+Starting recover at 09-MAY-18
+using channel ORA_DISK_1
+
+starting media recovery
+
+archived log for thread 1 with sequence 57 is already on disk as file /fra/NCSCM/archivelog/2018_05_09/o1_mf_1_57_fh5t7v4d_.arc
+archived log for thread 1 with sequence 58 is already on disk as file /fra/NCSCM/archivelog/2018_05_09/o1_mf_1_58_fh5t7vmc_.arc
+archived log for thread 1 with sequence 59 is already on disk as file /fra/NCSCM/archivelog/2018_05_09/o1_mf_1_59_fh5t7z0d_.arc
+archived log file name=/fra/NCSCM/archivelog/2018_05_09/o1_mf_1_57_fh5t7v4d_.arc thread=1 sequence=57
+media recovery complete, elapsed time: 00:00:00
+Finished recover.
+
+After recovery operation we need to open the DB with RESETLOGS because we made incomplete recovery: 
+SQL> alter database open resetlogs;
+
+Database altered.
+
+    GROUP# STATUS	    ARC  SEQUENCE# FIRST_CHANGE# NEXT_CHANGE#
+---------- ---------------- --- ---------- ------------- ------------
+	 1 CURRENT	    NO		 1	 2063083   2.8147E+14
+	 2 UNUSED	    YES 	 0	       0	    0
+	 3 UNUSED	    YES 	 0	       0	    0
