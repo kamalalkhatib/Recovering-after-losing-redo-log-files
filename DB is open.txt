@@ -1,4 +1,4 @@
-- We lost the current redo log file and DB is still open and we did not multiplex this redo group :
+- We lost the current redo log file, there is no multiplexing and DB is still open :
 - checking alert.log :
 Errors in file /database/app/oracle/diag/rdbms/ncscm/ncscm/trace/ncscm_arc0_3523.trc:
 ORA-00313: open failed for members of log group 3 of thread 1
